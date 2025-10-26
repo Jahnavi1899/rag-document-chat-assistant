@@ -17,9 +17,10 @@ from langchain_openai import ChatOpenAI
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Chroma
 
-from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.prompts import ChatPromptTemplate, PromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
+from langchain_community.chat_message_histories import PostgresChatMessageHistory
 
 # This line is crucial: it attempts to create tables defined 
 # by 'Base' (we have none yet, but it verifies connection)
@@ -35,6 +36,15 @@ app = FastAPI(
     version="0.1.0"
 )
 
+# Mock user for simplicity (In a real app, this would come from auth)
+MOCK_USER_ID = 1 
+# Define the model names 
+EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2" 
+STORAGE_PATH = "storage/documents" 
+redis_client = Redis(host=settings.REDIS_HOST, port=settings.REDIS_PORT, decode_responses=True)
+REDIS_CACHE_TTL = 3600 # 1 hour
+MAX_HISTORY_MESSAGES = 10 # keep the last 100 messages as context for chat history
+
 # Run the table creation on startup
 @app.on_event("startup")
 def startup_event():
@@ -46,7 +56,6 @@ def startup_event():
         print(f"ERROR: Could not connect to PostgreSQL. {e}")
         # In a real app, you might want to fail startup here
         raise HTTPException(status_code=500, detail="Database connection failure during startup.")
-
 
 # Test Endpoint for DB connectivity
 @app.get("/health/db")
@@ -63,13 +72,6 @@ def check_db_health(db: Session = Depends(get_db)):
 @app.get("/health")
 def main_health_check():
     return {"status": "ok", "service": "FastAPI", "message": "API is running."}
-
-# Mock user for simplicity (In a real app, this would come from auth)
-MOCK_USER_ID = 1 
-# Define the model names (Must match those used in tasks.py)
-EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2" 
-STORAGE_PATH = "storage/documents" 
-redis_client = Redis(host=settings.REDIS_HOST, port=settings.REDIS_PORT, decode_responses=True)
 
 @app.post("/api/v1/documents/upload", response_model=DocumentUploadResponse, status_code=202)
 def upload_document(
@@ -185,6 +187,13 @@ def chat_with_document(
         raise HTTPException(status_code=400, detail="Document not found or not processed.")
 
     try:
+        # Check Redis Cache first
+        # cache_key = f"rag_cache:{document_id}:{question}"
+        # cached_answer = redis_client.get(cache_key)
+        # if cached_answer:
+        #     print(f"Cache hit for key: {cache_key}")
+        #     return {"answer": cached_answer}
+        
         # 2. Initialize RAG Components
         embeddings = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL_NAME)
         collection_name = f"doc_{document_id}"
@@ -201,49 +210,102 @@ def chat_with_document(
         llm = ChatOpenAI(model_name="gpt-5-nano", temperature=0) 
 
         # Define the template for the final LLM call (Augmentation)
-        template = """
-        You are an expert Q&A system. Use the following context to answer the user's question. 
-        If the answer is not in the context, state clearly, "I don't have enough information in the document to answer that."
+        # template = """
+        # You are an expert Q&A system. Use the following context to answer the user's question. 
+        # If the answer is not in the context, state clearly, "I don't have enough information in the document to answer that."
 
-        CONTEXT:
-        {context}
+        # CONTEXT:
+        # {context}
 
-        QUESTION:
-        {question}
-        """
+        # QUESTION:
+        # {question}
+        # """
         
-        qa_prompt = ChatPromptTemplate.from_template(template) # Using the core method
+        # qa_prompt = ChatPromptTemplate.from_template(template) # Using the core method
+        session_id = f"{MOCK_USER_ID}_doc_{document_id}"
+        message_history = PostgresChatMessageHistory(
+            connection_string=settings.DATABASE_URL, 
+            session_id=session_id, 
+            table_name=models.MessageStore.__tablename__
+        )
+
+        # Load chat history for injecting into the chains
+        loaded_history = message_history.messages
         
-        # 4. Construct the Pure LCEL Chain 
-        # This defines the sequence: Retrieve -> Format -> Prompt -> LLM -> Parse
-        rag_chain = (
-            # Step A: Input Mapping. The initial 'question' is the input here.
-            {
-                # 1. 'context': Pass the question to the retriever, pipe the documents 
-                # to the format_docs utility function.
-                "context": retriever | format_docs, 
-                # 2. 'question': Pass the original question directly through.
-                "question": RunnablePassthrough()
-            }
-            # Step B: Formats the dictionary into the final prompt for the LLM.
-            | qa_prompt
-            # Step C: Sends the prompt to the LLM for generation.
-            | llm.with_config(run_name="LLM_Call")
-            # Step D: Extracts the final string from the LLM response object.
+        # --- 4. Sub-Chain 1: Question Rephrasing (Condenser) ---
+        # This sub-chain uses the history to create a standalone query.
+        condenser_prompt = ChatPromptTemplate.from_messages(
+            [
+                (
+                    "system", 
+                    """Given the chat history and the latest user question, formulate a standalone question 
+                    "that can be fully understood without the chat history. Return ONLY the question string and nothing else."""
+                ),
+                MessagesPlaceholder(variable_name="chat_history"), 
+                ("human", "{question}"),
+            ]
+        )
+
+        # Condenser Runnable: uses LLM to rephrase the question
+        condenser_chain = (
+            condenser_prompt 
+            | llm.with_config(run_name="Condenser_LLM")
             | StrOutputParser()
         )
-        cache_key = f"rag_cache:{document_id}:{question}"
-        cached_answer = redis_client.get(cache_key)
-        if cached_answer:
-            print(f"Cache hit for key: {cache_key}")
-            return {"answer": cached_answer}
+
+        # --- 5. Main Retrieval Logic ---
+        # Logic to decide which question to use for retrieval: 
+        # If history exists, use the condensed query; otherwise, use the original question.
+        def get_retrieval_query(chain_input: dict):
+            if not chain_input["chat_history"]:
+                # If no history, just use the original question (input)
+                return chain_input["question"]
+            else:
+                # If history exists, run the condenser chain to get the standalone query
+                return condenser_chain.invoke(chain_input)
+                
+        # --- 6. Final RAG Chain Composition ---
         
-        # 5. Run the Query (Execution)
-        # We use 'invoke' on the final runnable chain.
-        result = rag_chain.invoke(question)
-        redis_client.set(cache_key, result, ex=3600)
-        # 6. Return the answer
-        return {"answer": result} # The result is the final answer string
+        # The main question-answering prompt template
+        qa_prompt = ChatPromptTemplate.from_messages(
+            [
+                (
+                    "system",
+                    # Ensure the instruction is direct and firm:
+                    """You are an expert Q&A system. Use ONLY the following pieces of retrieved context 
+                    to answer the question. If the answer is not contained in the context, you MUST
+                    state: 'I don't have enough information in the document to answer that.' 
+                    "CONTEXT:\n{context}""",
+                ),
+                ("human", "{question}"),
+            ]
+        )
+
+        # The full RAG chain defines the sequence: 
+        final_rag_chain = (
+            # 1. RunnablePassthrough: Input is {"question": question, "chat_history": history}
+            # We assign the necessary variables and retrieve context based on the result of get_retrieval_query
+            RunnablePassthrough.assign(
+                chat_history=lambda x: loaded_history, # Inject history
+                # Retrieve context using the function that generates the query
+                context=get_retrieval_query | retriever | format_docs 
+            )
+            # 2. Assemble the final prompt (Input: {context, question})
+            | qa_prompt
+            # 3. Generation (LLM Call)
+            | llm.with_config(run_name="Final_QA_LLM") 
+            # 4. Parsing
+            | StrOutputParser()
+        )
+        
+        # 7. Run the Query
+        final_answer = final_rag_chain.invoke({"question": question, "chat_history": loaded_history})
+        
+        # 8. Save the new messages (CRITICAL MEMORY STEP)
+        message_history.add_user_message(question)
+        message_history.add_ai_message(final_answer) 
+        
+        return {"answer": final_answer}
         
     except Exception as e:
         # Robust Error Handling (Employer skill)

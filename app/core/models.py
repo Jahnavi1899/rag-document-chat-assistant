@@ -49,11 +49,12 @@ class CeleryJob(Base):
 class MessageStore(Base):
     __tablename__ = "message_store"
     
+    id = Column(Integer, primary_key=True)
     # Session ID links the conversation to the document and user
-    session_id = Column(String, primary_key=True, index=True) 
+    session_id = Column(String, index=True, nullable=False) 
     
     # Store messages as JSONB (PostgreSQL's high-performance JSON type)
-    history = Column(JSONB, nullable=False)
+    message = Column(JSONB, nullable=False)
     
     # Optional: Indexing for fast retrieval by session
     __table_args__ = (
