@@ -1,0 +1,24 @@
+fastapi[all]
+uvicorn
+pydantic
+sqlalchemy
+psycopg2-binary
+redis
+celery
+python-dotenv
+# LLM/RAG libraries
+langchain
+langchain-core
+langchain-community
+langchain-text-splitters
+langchain-postgres
+# PDF Handling
+pypdf
+# Embedding Model (if using open-source)
+sentence-transformers
+# Vector Store (ChromaDB)
+chromadb
+
+# We will need these later
+langchain-openai
+tiktoken

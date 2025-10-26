@@ -1,0 +1,9 @@
+.env
+__pycache__/
+*.pyc
+
+.devcontainer/
+
+storage/          # EXCLUDE: All documents, ChromaDB files, and logs
+/postgres_data/    # EXCLUDE: The persistent Postgres data volume
+/chroma_db/        # EXCLUDE: The vector store files (if stored outside /storage)

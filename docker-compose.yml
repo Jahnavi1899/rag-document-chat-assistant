@@ -1,0 +1,81 @@
+services:
+  # 1. PostgreSQL Database Service
+  postgres:
+    image: postgres:16-alpine
+    container_name: postgres_db
+    environment:
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data/
+    # This port mapping is for local development; Codespaces handles internal networking automatically.
+    ports: 
+      - "5432:5432" 
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # 2. Redis Cache and Celery Broker Service
+  redis:
+    image: redis:7-alpine
+    container_name: redis_cache
+    # No custom environment variables needed; it runs on the default port 6379
+
+  # 3. FastAPI Web Application Service (The API Producer)
+  api:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    container_name: fastapi_app
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    volumes:
+      - .:/app
+    ports:
+      - "8000:8000"
+    environment:
+      # Database connection string
+      DATABASE_URL: postgresql://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
+      # Redis connection string for Caching
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      # Celery Broker URL (Redis)
+      CELERY_BROKER_URL: redis://redis:6379/0
+      # Celery Backend URL (Redis)
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+    # Ensures database and Redis are running before the API starts
+    depends_on:
+      redis:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+
+  # 4. Celery Worker Service (The Async Consumer)
+  worker:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    container_name: celery_worker
+    # The command runs the Celery worker process
+    command: celery -A app.core.celery_worker:celery_app worker -l info
+    volumes:
+      - .:/app
+    environment:
+      # Must use the same environment variables as the API service
+      DATABASE_URL: postgresql://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+    depends_on:
+      api:
+        condition: service_started
+      redis:
+        condition: service_started
+
+volumes:
+  postgres_data:
