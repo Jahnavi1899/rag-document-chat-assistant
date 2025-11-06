@@ -33,7 +33,9 @@ const UploadComponent: React.FC<UploadComponentProps> = ({ onProcessingStart, on
         onProcessingStart();
         const intervalId = setInterval(async () => {
             try {
-                const response = await fetch(statusUrl);
+                const response = await fetch(statusUrl, {
+                    credentials: 'include'  // Include session cookies
+                });
                 if (!response.ok) {
                     throw new Error(`Status check failed: ${response.status}`);
                 }
@@ -81,8 +83,8 @@ const UploadComponent: React.FC<UploadComponentProps> = ({ onProcessingStart, on
         try {
             const response = await fetch(`${API_BASE_PATH}/documents/upload`, {
                 method: 'POST',
-                // Content-Type header is set automatically by the browser when using FormData
-                body: formData, 
+                body: formData,
+                credentials: 'include'  // Include session cookies
             });
 
             if (response.status !== 202) { // Expect 202 Accepted for Celery task dispatch

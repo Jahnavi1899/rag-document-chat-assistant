@@ -25,27 +25,30 @@ function App() {
     //     }
     // }, []);
 
-    useEffect(() => {
-        // Fetch list of all indexed documents from the backend
-        const fetchDocuments = async () => {
-            try {
-                const response = await fetch('/api/v1/documents');
-                if (response.ok) {
-                    const data: DocumentInfo[] = await response.json();
-                    setAvailableDocuments(data);
-                    
-                    if(data.length > 0){
-                        // If there are available documents, set the first one as selected by default
-                        setSelectedDocumentId(data[0].id);
-                    }
-                    else{
-                        setSelectedDocumentId(null);
-                    }
+    const fetchDocuments = async () => {
+        try {
+            const response = await fetch('/api/v1/documents', {
+                credentials: 'include'  // Include session cookies
+            });
+            if (response.ok) {
+                const data: DocumentInfo[] = await response.json();
+                setAvailableDocuments(data);
+
+                if(data.length > 0){
+                    // If there are available documents, set the first one as selected by default
+                    setSelectedDocumentId(data[0].id);
                 }
-            } catch (error) {
-                console.error("Failed to fetch document list:", error);
+                else{
+                    setSelectedDocumentId(null);
+                }
             }
-        };
+        } catch (error) {
+            console.error("Failed to fetch document list:", error);
+        }
+    };
+
+    useEffect(() => {
+        // Fetch list of all indexed documents on mount
         fetchDocuments();
     }, []);
 
@@ -59,12 +62,14 @@ function App() {
                 <h1>AI Document Intelligence Platform</h1>
             </header>
             
-            <UploadComponent 
+            <UploadComponent
                 onProcessingStart={() => setProcessingStatus('PENDING')}
                 onProcessingComplete={(docId, fileName) => {
                     setProcessedDocumentId(docId);
                     setProcessedDocumentName(fileName);
                     setProcessingStatus('SUCCESS');
+                    // Refresh document list after successful upload
+                    fetchDocuments();
                 }}
                 onProcessingFailure={() => setProcessingStatus('FAILURE')}
             />

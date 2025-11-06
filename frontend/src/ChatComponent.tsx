@@ -32,11 +32,11 @@ const ChatComponent: React.FC<ChatComponentProps> = ({ documentId, documentName 
         const url = `${API_BASE_PATH}/documents/${documentId}/chat`;
 
         try {
-            console.log(JSON.stringify(payload))
             const response = await fetch(url, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload),
+                credentials: 'include'  // Include session cookies
             });
 
             if (!response.ok || !response.body) {

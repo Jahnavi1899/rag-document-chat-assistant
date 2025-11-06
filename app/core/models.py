@@ -1,32 +1,42 @@
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Text, Boolean, ForeignKey, Index
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Text, Boolean, Index
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.core.database import Base # Import the Base class we defined earlier
 from sqlalchemy.dialects.postgresql import JSONB
 
-# --- 1. User Model ---
-class User(Base):
-    __tablename__ = "users"
+# --- 1. Session Model (for tracking session metadata and cleanup) ---
+class Session(Base):
+    __tablename__ = "sessions"
     id = Column(Integer, primary_key=True, index=True)
-    username = Column(String, unique=True, index=True, nullable=False)
-    documents = relationship("Document", back_populates="owner")
+    session_id = Column(String(64), unique=True, index=True, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    last_activity = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False)
+
+    # Relationship to documents
+    documents = relationship("Document", back_populates="session", cascade="all, delete-orphan")
 
 # --- 2. Document Model (Metadata) ---
 class Document(Base):
     __tablename__ = "documents"
     id = Column(Integer, primary_key=True, index=True)
     filename = Column(String, index=True, nullable=False)
-    file_path = Column(String, nullable=False)  
-    summary = Column(Text, nullable=True)       
+    file_path = Column(String, nullable=False)
+    summary = Column(Text, nullable=True)
     upload_time = Column(DateTime(timezone=True), server_default=func.now())
     is_processed = Column(Boolean, default=False, nullable=False)
-    
-    # Foreign Key relationship
-    owner_id = Column(Integer, ForeignKey("users.id"))
-    owner = relationship("User", back_populates="documents")
-    
+
+    # Session-based ownership
+    session_id = Column(String(64), ForeignKey("sessions.session_id", ondelete="CASCADE"), nullable=False, index=True)
+    session = relationship("Session", back_populates="documents")
+
     # Relationship to the async job tracking the ingestion process
     job = relationship("CeleryJob", back_populates="document", uselist=False)
+
+    # Composite index for common queries
+    __table_args__ = (
+        Index("idx_document_session_processed", "session_id", "is_processed"),
+    )
 
 # --- 3. Celery Job Tracking Model ---
 class CeleryJob(Base):
