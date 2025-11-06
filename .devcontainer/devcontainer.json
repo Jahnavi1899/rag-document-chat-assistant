@@ -1,24 +1,45 @@
 {
-  "name": "RAG Document Chat Assistant",
-  "dockerComposeFile": "../docker-compose.yml",
-  "service": "api",
-  "workspaceFolder": "/app",
+  "name": "RAG Document Chat Assistant - Full Stack Dev Environment",
 
-  // Uncomment to connect as root instead
-  // "remoteUser": "root",
+  // Use a base image with Python 3.11 and development tools
+  "image": "mcr.microsoft.com/devcontainers/python:3.11",
 
+  // Features to add to the dev container
+  "features": {
+    // Docker-in-Docker: Crucial for running docker-compose inside Codespaces
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {
+      "version": "latest",
+      "moby": true
+    },
+    // Additional helpful tools
+    "ghcr.io/devcontainers/features/git:1": {},
+    "ghcr.io/devcontainers/features/github-cli:1": {},
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "20"
+    }
+  },
+
+  // Install required VS Code extensions on startup
   "customizations": {
     "vscode": {
       "extensions": [
+        // Python Development
         "ms-python.python",
         "ms-python.vscode-pylance",
         "ms-python.black-formatter",
+
+        // JavaScript/TypeScript/React Development
         "dbaeumer.vscode-eslint",
         "esbenp.prettier-vscode",
-        "bradlc.vscode-tailwindcss",
         "dsznajder.es7-react-js-snippets",
+        "formulahendry.auto-rename-tag",
+
+        // Docker & Containers
         "ms-azuretools.vscode-docker",
-        "ms-vscode-remote.remote-containers"
+
+        // Database
+        "mtxr.sqltools",
+        "mtxr.sqltools-driver-pg"
       ],
       "settings": {
         "python.defaultInterpreterPath": "/usr/local/bin/python",
@@ -36,6 +57,7 @@
 
   // Forward ports for local development
   "forwardPorts": [8000, 5173, 5432, 6379],
+
   "portsAttributes": {
     "8000": {
       "label": "FastAPI Backend",
@@ -55,12 +77,9 @@
     }
   },
 
-  // Run commands after container creation
-  "postCreateCommand": "echo 'Dev container ready! Run docker-compose up to start all services.'",
+  // Automatically run docker-compose after the Codespace is ready
+  "postCreateCommand": "docker compose up -d",
 
-  // Features to add to the dev container
-  "features": {
-    "ghcr.io/devcontainers/features/git:1": {},
-    "ghcr.io/devcontainers/features/github-cli:1": {}
-  }
+  // Keep container running even if no process is active
+  "overrideCommand": true
 }
