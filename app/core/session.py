@@ -3,7 +3,7 @@
 Session management utilities for anonymous session-based access.
 """
 import secrets
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from sqlalchemy.orm import Session
 from app.core import models
@@ -86,11 +86,11 @@ def validate_session(db: Session, session_id: str) -> Optional[models.Session]:
         return None
 
     # Check if session is expired
-    if session.expires_at < datetime.utcnow():
+    if session.expires_at < datetime.now(timezone.utc):
         return None
 
     # Update last activity timestamp
-    session.last_activity = datetime.utcnow()
+    session.last_activity = datetime.now(timezone.utc)
     db.commit()
 
     return session

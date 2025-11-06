@@ -1,6 +1,6 @@
 # app/core/tasks.py
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 import time
 
 from sqlalchemy.orm import Session
@@ -85,7 +85,7 @@ def process_rag_ingestion(document_id: int):
         # Handle Failure
         if job:
             job.status = "FAILURE"
-            job.end_time = datetime.now()
+            job.end_time = datetime.now(timezone.utc)
             job.result = f"RAG error: {str(e)}"
             db.commit()
             

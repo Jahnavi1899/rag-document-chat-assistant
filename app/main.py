@@ -49,9 +49,7 @@ app.add_middleware(SessionMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:5173",  # Local Vite dev server
-        "http://localhost:3000",  # Alternative local port
-        "*"  # TODO: Replace with specific frontend domain in production
+        "*"  # Replace with specific frontend domain in production
     ],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE"],
@@ -244,8 +242,7 @@ async def chat_with_document(
         )
         retriever = vectorstore.as_retriever(search_kwargs={"k": 4})
 
-        # Initialize LLM (using a valid OpenAI model)
-        llm = ChatOpenAI(model_name="gpt-3.5-turbo", temperature=0)
+        llm = ChatOpenAI(model_name="gpt-5-nano", temperature=0)
 
         # Chat history management (session-scoped)
         chat_session_id = f"{session_id}_doc_{document_id}"
