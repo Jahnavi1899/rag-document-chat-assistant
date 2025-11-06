@@ -1,96 +1,91 @@
-from fastapi import FastAPI, Depends, HTTPException, File, UploadFile
+from fastapi import FastAPI, Depends, HTTPException, File, UploadFile, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
+from sqlalchemy import text
+import shutil
+import os
+import asyncio
+from uuid import uuid4
+
 from app.core.database import engine, get_db, Base
 from app.core.config import settings
-from sqlalchemy import text
 from app.core import models
-from app.schemas.document import DocumentUploadResponse, CeleryJobStatus, ChatInput, ChatPayload, DocumentInfo
+from app.core.middleware import SessionMiddleware
+from app.schemas.document import DocumentUploadResponse, CeleryJobStatus, ChatPayload, DocumentInfo
 from app.core.tasks import process_rag_ingestion
-import shutil
-import os 
-from uuid import uuid4
-import json
-from redis import Redis
-from app.core.config import settings
-import asyncio
 
 from langchain_openai import ChatOpenAI
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Chroma
-
-from langchain_core.prompts import ChatPromptTemplate, PromptTemplate, MessagesPlaceholder
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
 from langchain_community.chat_message_histories import PostgresChatMessageHistory
 
-from fastapi.responses import StreamingResponse
-from langchain_core.runnables import RunnablePassthrough
-
 global_embeddings = None
-global_vectorstore = None
-# This line is crucial: it attempts to create tables defined 
-# by 'Base' (we have none yet, but it verifies connection).
+
+# Configuration constants
+EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
+STORAGE_PATH = "storage/documents"
+MAX_HISTORY_MESSAGES = 10  # Limit chat history to last 10 messages
+
+
 def create_tables():
-    # Attempt to create tables defined by Base (currently none)
-    # This also acts as a basic connection test
+    """Create all database tables defined by SQLAlchemy models."""
     Base.metadata.create_all(bind=engine)
 
+
 app = FastAPI(
-    title=settings.DB_NAME.upper(), 
-    version="0.1.0"
+    title="RAG Document Chat Assistant",
+    version="0.2.0",
+    description="Session-based RAG document chat system"
 )
 
+# Add session middleware (must be added before CORS)
+app.add_middleware(SessionMiddleware)
+
+# Configure CORS - update allow_origins in production
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], 
+    allow_origins=[
+        "http://localhost:5173",  # Local Vite dev server
+        "http://localhost:3000",  # Alternative local port
+        "*"  # TODO: Replace with specific frontend domain in production
+    ],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE"],
     allow_headers=["Content-Type", "Authorization"],
     expose_headers=["*"]
 )
 
-
-MOCK_USER_ID = 1
-# Define the model names 
-EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2" 
-STORAGE_PATH = "storage/documents" 
-redis_client = Redis(host=settings.REDIS_HOST, port=settings.REDIS_PORT, decode_responses=True)
-REDIS_CACHE_TTL = 3600 # 1 hour
-MAX_HISTORY_MESSAGES = 10 # keep the last 100 messages as context for chat history
-
 # Run the table creation on startup
 @app.on_event("startup")
 def startup_event():
+    """Initialize database tables and RAG components on application startup."""
     print("FastAPI application startup: Attempting to connect to PostgreSQL...")
     try:
         create_tables()
-        print("Successfully connected to PostgreSQL.")
+        print("Successfully connected to PostgreSQL and created tables.")
     except Exception as e:
         print(f"ERROR: Could not connect to PostgreSQL. {e}")
-        raise HTTPException(status_code=500, detail="Database connection failure during startup.")
-    
+        raise RuntimeError(f"Database connection failure during startup: {e}")
+
     try:
         global global_embeddings
-        global global_vectorstore
 
-        # 1. Initialize Embeddings (SLOWEST STEP)
-        print("Initializing RAG components globally (this may take time)...")
+        # Initialize embeddings model (loaded once and reused)
+        print("Initializing embeddings model (this may take time)...")
         global_embeddings = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL_NAME)
-        print("Embeddings initialized.")
+        print("Embeddings model initialized successfully.")
 
-        # 2. Initialize Vector Store
-        global_vectorstore = Chroma(
-            collection_name="doc_placeholder",
-            embedding_function=global_embeddings,
-            persist_directory=f"{STORAGE_PATH}/chroma_db"
-        )
-        print("Vector Store connection ready.")
+        # Ensure storage directory exists
+        os.makedirs(STORAGE_PATH, exist_ok=True)
+        print(f"Storage directory verified: {STORAGE_PATH}")
+
     except Exception as e:
         print(f"FATAL RAG INITIALIZATION ERROR: {e}")
-        print("Application cannot start because core RAG components failed to load.")
-
-        raise RuntimeError("Failed to load RAG singletons. Check dependencies/storage.")
+        raise RuntimeError(f"Failed to load RAG components: {e}")
 
 # Test Endpoint for DB connectivity
 @app.get("/health/db")
@@ -109,48 +104,51 @@ def main_health_check():
 
 @app.post("/api/v1/documents/upload", response_model=DocumentUploadResponse, status_code=202)
 def upload_document(
-    file: UploadFile = File(...), 
-    db: Session = Depends(get_db)
+    request: Request,
+    file: UploadFile = File(...)
 ):
     """
-    Accepts a document upload, saves it, creates metadata, and 
+    Accepts a document upload, saves it, creates metadata, and
     dispatches an asynchronous RAG ingestion job.
+    Session is automatically managed by middleware.
     """
-    
-    # 1. Ensure Mock User exists (setup for ForeignKey)
-    user = db.query(models.User).filter(models.User.id == MOCK_USER_ID).first()
-    if not user:
-        # Create a mock user if one doesn't exist for testing
-        user = models.User(id=MOCK_USER_ID, username="user1")
-        db.add(user)
-        db.commit()
-        db.refresh(user)
+    # Get session from middleware (attached to request.state)
+    session_id = request.state.session_id
+    db = request.state.db
 
-    # 2. Save the physical file locally (use a unique name)
+    # Validate file type
+    if not file.filename.endswith(('.pdf', '.txt')):
+        raise HTTPException(
+            status_code=400,
+            detail="Only PDF and TXT files are supported"
+        )
+
+    # Save the physical file locally (use a unique name)
     unique_filename = f"{uuid4()}_{file.filename}"
-    file_location = os.path.join("storage/documents", unique_filename)
-    
+    file_location = os.path.join(STORAGE_PATH, unique_filename)
+
     try:
+        # Ensure storage directory exists
+        os.makedirs(STORAGE_PATH, exist_ok=True)
+
         with open(file_location, "wb") as buffer:
-            # Use shutil to copy the uploaded file stream to the disk
             shutil.copyfileobj(file.file, buffer)
-            
-        # 3. Create Document metadata record in PostgreSQL
+
+        # Create Document metadata record in PostgreSQL
         document = models.Document(
             filename=file.filename,
             file_path=file_location,
-            owner_id=user.id,
+            session_id=session_id,
             is_processed=False
         )
         db.add(document)
         db.commit()
-        db.refresh(document) # why this refersh is there?
+        db.refresh(document)  # Refresh to get the auto-generated ID
 
-        # 4. Dispatch Celery Task
-        # Send the document ID as the argument. The task will look up the rest.
-        task = process_rag_ingestion.delay(document.id) 
-        
-        # 5. Create CeleryJob tracking record in PostgreSQL
+        # Dispatch Celery Task
+        task = process_rag_ingestion.delay(document.id)
+
+        # Create CeleryJob tracking record in PostgreSQL
         job = models.CeleryJob(
             document_id=document.id,
             celery_task_id=task.id,
@@ -158,9 +156,8 @@ def upload_document(
         )
         db.add(job)
         db.commit()
-        db.refresh(job)
 
-        # 6. Return 202 Accepted status with job details
+        # Return 202 Accepted status with job details
         return DocumentUploadResponse(
             document_id=document.id,
             filename=document.filename,
@@ -171,21 +168,35 @@ def upload_document(
                 message="Task dispatched to worker."
             )
         )
-        
+
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"File processing failed: {e}")
+        # Clean up the file if database operation failed
+        if os.path.exists(file_location):
+            os.remove(file_location)
+        raise HTTPException(status_code=500, detail=f"File processing failed: {str(e)}")
 
 @app.get("/api/v1/jobs/status/{task_id}", response_model=CeleryJobStatus)
-def get_job_status(task_id: str, db: Session = Depends(get_db)):
+def get_job_status(request: Request, task_id: str):
     """
     Allows the client to poll for the current status of a RAG ingestion job.
+    Validates that the job belongs to the current session.
     """
-    job = db.query(models.CeleryJob).filter(models.CeleryJob.celery_task_id == task_id).first()
-    
+    session_id = request.state.session_id
+    db = request.state.db
+
+    # Get the job and verify it belongs to the current session
+    job = db.query(models.CeleryJob).join(models.Document).filter(
+        models.CeleryJob.celery_task_id == task_id,
+        models.Document.session_id == session_id
+    ).first()
+
     if not job:
-        raise HTTPException(status_code=404, detail="Job ID not found.")
-        
+        raise HTTPException(
+            status_code=404,
+            detail="Job not found or does not belong to your session"
+        )
+
     return CeleryJobStatus(
         job_id=job.celery_task_id,
         status=job.status,
@@ -198,69 +209,54 @@ def format_docs(docs):
 
 @app.post("/api/v1/documents/{document_id}/chat")
 async def chat_with_document(
-    document_id: int, 
-    payload: ChatPayload,
-    db: Session = Depends(get_db)
+    request: Request,
+    document_id: int,
+    payload: ChatPayload
 ):
     """
-    Implements the full RAG pipeline using pure LCEL (Runnable) components, 
-    bypassing unstable wrapper chains.
+    Implements the full RAG pipeline with session-based access control.
+    Uses streaming responses for real-time token delivery.
     """
+    session_id = request.state.session_id
+    db = request.state.db
     question = payload.question
-    # 1. Verification (Crucial Backend Step)
+
+    # Verify document belongs to session and is processed
     document = db.query(models.Document).filter(
-        models.Document.id == document_id, 
-        models.Document.owner_id == MOCK_USER_ID
+        models.Document.id == document_id,
+        models.Document.session_id == session_id,
+        models.Document.is_processed == True
     ).first()
 
-    if not document or not document.is_processed:
-        raise HTTPException(status_code=400, detail="Document not found or not processed.")
+    if not document:
+        raise HTTPException(
+            status_code=404,
+            detail="Document not found, not processed, or does not belong to your session"
+        )
 
     try:
-        # Check Redis Cache first
-        # cache_key = f"rag_cache:{document_id}:{question}"
-        # cached_answer = redis_client.get(cache_key)
-        # if cached_answer:
-        #     print(f"Cache hit for key: {cache_key}")
-        #     return {"answer": cached_answer}
-        
-        # 2. Initialize RAG Components
-        # embeddings = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL_NAME)
+        # Load the Vector Store for this document
         collection_name = f"doc_{document_id}"
-        
-        # Load the Vector Store (Retriever Source)
         vectorstore = Chroma(
-            collection_name=collection_name, 
-            embedding_function=global_embeddings, 
+            collection_name=collection_name,
+            embedding_function=global_embeddings,
             persist_directory=f"{STORAGE_PATH}/chroma_db"
         )
-        retriever = vectorstore.as_retriever(search_kwargs={"k": 4}) # Retrieve top 4 chunks
-        # print("Step 2 complete")
-        # 3. Define the LLM and Prompt
-        llm = ChatOpenAI(model_name="gpt-5-nano", temperature=0) 
+        retriever = vectorstore.as_retriever(search_kwargs={"k": 4})
 
-        # Define the template for the final LLM call (Augmentation)
-        # template = """
-        # You are an expert Q&A system. Use the following context to answer the user's question. 
-        # If the answer is not in the context, state clearly, "I don't have enough information in the document to answer that."
+        # Initialize LLM (using a valid OpenAI model)
+        llm = ChatOpenAI(model_name="gpt-3.5-turbo", temperature=0)
 
-        # CONTEXT:
-        # {context}
-
-        # QUESTION:
-        # {question}
-        # """
-        
-        # qa_prompt = ChatPromptTemplate.from_template(template) # Using the core method
-        session_id = f"{MOCK_USER_ID}_doc_{document_id}"
+        # Chat history management (session-scoped)
+        chat_session_id = f"{session_id}_doc_{document_id}"
         message_history = PostgresChatMessageHistory(
-            connection_string=settings.DATABASE_URL, 
-            session_id=session_id, 
+            connection_string=settings.DATABASE_URL,
+            session_id=chat_session_id,
             table_name=models.MessageStore.__tablename__
         )
 
-        # Load chat history for injecting into the chains
-        loaded_history = message_history.messages
+        # Load chat history and limit to MAX_HISTORY_MESSAGES
+        loaded_history = message_history.messages[-MAX_HISTORY_MESSAGES:] if message_history.messages else []
         
         # --- 4. Sub-Chain 1: Question Rephrasing (Condenser) ---
         # This sub-chain uses the history to create a standalone query.
@@ -329,38 +325,42 @@ async def chat_with_document(
         )
 
         async def stream_response_generator():
+            """Generate streaming response and save to chat history."""
             full_response = ""
             async for chunk in final_rag_chain.astream({"question": question, "chat_history": loaded_history}):
-                token = chunk
-                if token:
-                    full_response += token
-                    await asyncio.sleep(0.005) 
-                    yield token.encode("utf-8")
-        
+                if chunk:
+                    full_response += chunk
+                    yield chunk.encode("utf-8")
+
+            # Save the conversation to chat history
             message_history.add_user_message(question)
-            message_history.add_ai_message(full_response) 
-        
+            message_history.add_ai_message(full_response)
+
         return StreamingResponse(
-            stream_response_generator(), 
+            stream_response_generator(),
             media_type="text/plain"
         )
-        
+
     except Exception as e:
-        error_message = f"RAG Chat failed: {e}"
+        error_message = "An error occurred during chat processing."
         if "API_KEY" in str(e) or "authentication" in str(e):
-             error_message = "LLM API Key configuration error. Please check OPENAI_API_KEY."
-        
+            error_message = "LLM API Key configuration error. Please check OPENAI_API_KEY."
+
         raise HTTPException(status_code=500, detail=error_message)
     
 @app.get("/api/v1/documents", response_model=list[DocumentInfo])
-def list_documents(db: Session = Depends(get_db)):
-    """Retrieves metadata for all processed and indexed documents."""
+def list_documents(request: Request):
+    """
+    Retrieves metadata for all processed documents belonging to the current session.
+    """
+    session_id = request.state.session_id
+    db = request.state.db
 
     documents = db.query(models.Document).filter(
-        models.Document.owner_id == MOCK_USER_ID,
-        models.Document.is_processed == True 
-    ).all()
-    # print(documents)
+        models.Document.session_id == session_id,
+        models.Document.is_processed == True
+    ).order_by(models.Document.upload_time.desc()).all()
+
     return [
         DocumentInfo(id=d.id, filename=d.filename, is_processed=d.is_processed)
         for d in documents

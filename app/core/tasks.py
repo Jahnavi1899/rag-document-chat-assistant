@@ -94,3 +94,66 @@ def process_rag_ingestion(document_id: int):
         
     finally:
         db.close()
+
+
+@celery_app.task(name="session.cleanup_expired_sessions")
+def cleanup_expired_sessions():
+    """
+    Cleanup task to remove expired sessions and their associated data.
+    Should be run periodically (e.g., daily) via Celery Beat.
+    """
+    import shutil
+
+    db: Session = SessionLocal()
+
+    try:
+        # Find all expired sessions
+        expired_sessions = db.query(models.Session).filter(
+            models.Session.expires_at < datetime.utcnow()
+        ).all()
+
+        total_cleaned = 0
+        for session in expired_sessions:
+            session_id = session.session_id
+
+            # Get all documents for this session
+            documents = db.query(models.Document).filter(
+                models.Document.session_id == session_id
+            ).all()
+
+            # Delete physical files and ChromaDB collections
+            for doc in documents:
+                # Delete physical file
+                if doc.file_path and os.path.exists(doc.file_path):
+                    try:
+                        os.remove(doc.file_path)
+                        print(f"Deleted file: {doc.file_path}")
+                    except Exception as e:
+                        print(f"Error deleting file {doc.file_path}: {e}")
+
+                # Delete ChromaDB collection
+                collection_name = f"doc_{doc.id}"
+                chroma_path = os.path.join(STORAGE_PATH, "chroma_db", collection_name)
+                if os.path.exists(chroma_path):
+                    try:
+                        shutil.rmtree(chroma_path)
+                        print(f"Deleted ChromaDB collection: {collection_name}")
+                    except Exception as e:
+                        print(f"Error deleting ChromaDB collection {collection_name}: {e}")
+
+            # Delete the session (cascade will delete documents, jobs, message_store)
+            db.delete(session)
+            total_cleaned += 1
+
+        db.commit()
+
+        print(f"Session cleanup complete: Removed {total_cleaned} expired sessions")
+        return {"status": "SUCCESS", "sessions_cleaned": total_cleaned}
+
+    except Exception as e:
+        db.rollback()
+        print(f"FATAL ERROR in session cleanup: {e}")
+        return {"status": "FAILURE", "error": str(e)}
+
+    finally:
+        db.close()
