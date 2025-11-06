@@ -76,6 +76,16 @@ services:
         condition: service_started
       redis:
         condition: service_started
-
+  #5. React Frontend Service
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: react_frontend
+    ports:
+      - "5173:80"
+    depends_on:
+      api:
+        condition: service_started
 volumes:
   postgres_data:

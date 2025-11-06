@@ -1,10 +1,11 @@
 from fastapi import FastAPI, Depends, HTTPException, File, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from app.core.database import engine, get_db, Base
 from app.core.config import settings
 from sqlalchemy import text
 from app.core import models
-from app.schemas.document import DocumentUploadResponse, CeleryJobStatus, ChatInput
+from app.schemas.document import DocumentUploadResponse, CeleryJobStatus, ChatInput, ChatPayload, DocumentInfo
 from app.core.tasks import process_rag_ingestion
 import shutil
 import os 
@@ -12,6 +13,7 @@ from uuid import uuid4
 import json
 from redis import Redis
 from app.core.config import settings
+import asyncio
 
 from langchain_openai import ChatOpenAI
 from langchain_community.embeddings import HuggingFaceEmbeddings
@@ -22,10 +24,13 @@ from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
 from langchain_community.chat_message_histories import PostgresChatMessageHistory
 
+from fastapi.responses import StreamingResponse
+from langchain_core.runnables import RunnablePassthrough
+
+global_embeddings = None
+global_vectorstore = None
 # This line is crucial: it attempts to create tables defined 
-# by 'Base' (we have none yet, but it verifies connection)
-# NOTE: In a production setting, you would use Alembic for migrations,
-# but for development, this is a quick way to ensure the DB is accessible.
+# by 'Base' (we have none yet, but it verifies connection).
 def create_tables():
     # Attempt to create tables defined by Base (currently none)
     # This also acts as a basic connection test
@@ -36,8 +41,17 @@ app = FastAPI(
     version="0.1.0"
 )
 
-# Mock user for simplicity (In a real app, this would come from auth)
-MOCK_USER_ID = 1 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"], 
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
+    allow_headers=["Content-Type", "Authorization"],
+    expose_headers=["*"]
+)
+
+
+MOCK_USER_ID = 1
 # Define the model names 
 EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2" 
 STORAGE_PATH = "storage/documents" 
@@ -54,15 +68,35 @@ def startup_event():
         print("Successfully connected to PostgreSQL.")
     except Exception as e:
         print(f"ERROR: Could not connect to PostgreSQL. {e}")
-        # In a real app, you might want to fail startup here
         raise HTTPException(status_code=500, detail="Database connection failure during startup.")
+    
+    try:
+        global global_embeddings
+        global global_vectorstore
+
+        # 1. Initialize Embeddings (SLOWEST STEP)
+        print("Initializing RAG components globally (this may take time)...")
+        global_embeddings = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL_NAME)
+        print("Embeddings initialized.")
+
+        # 2. Initialize Vector Store
+        global_vectorstore = Chroma(
+            collection_name="doc_placeholder",
+            embedding_function=global_embeddings,
+            persist_directory=f"{STORAGE_PATH}/chroma_db"
+        )
+        print("Vector Store connection ready.")
+    except Exception as e:
+        print(f"FATAL RAG INITIALIZATION ERROR: {e}")
+        print("Application cannot start because core RAG components failed to load.")
+
+        raise RuntimeError("Failed to load RAG singletons. Check dependencies/storage.")
 
 # Test Endpoint for DB connectivity
 @app.get("/health/db")
 def check_db_health(db: Session = Depends(get_db)):
     """Simple health check that ensures the DB is responsive."""
     try:
-        # Execute a simple query to confirm the connection is active
         db.execute(text('SELECT 1'))
         return {"status": "ok", "service": "PostgreSQL", "message": "Database connection verified."}
     except Exception as e:
@@ -142,8 +176,6 @@ def upload_document(
         db.rollback()
         raise HTTPException(status_code=500, detail=f"File processing failed: {e}")
 
-# --- NEW ENDPOINT FOR JOB STATUS CHECK (POLLING) ---
-
 @app.get("/api/v1/jobs/status/{task_id}", response_model=CeleryJobStatus)
 def get_job_status(task_id: str, db: Session = Depends(get_db)):
     """
@@ -160,23 +192,21 @@ def get_job_status(task_id: str, db: Session = Depends(get_db)):
         message=job.result or "Job is currently in progress."
     )
 
-
 def format_docs(docs):
     """Formats a list of retrieved Document objects into a single string for the prompt context."""
     return "\n\n".join(doc.page_content for doc in docs)
 
-
 @app.post("/api/v1/documents/{document_id}/chat")
-def chat_with_document(
+async def chat_with_document(
     document_id: int, 
-    question: str,
+    payload: ChatPayload,
     db: Session = Depends(get_db)
 ):
     """
     Implements the full RAG pipeline using pure LCEL (Runnable) components, 
     bypassing unstable wrapper chains.
     """
-    
+    question = payload.question
     # 1. Verification (Crucial Backend Step)
     document = db.query(models.Document).filter(
         models.Document.id == document_id, 
@@ -195,17 +225,17 @@ def chat_with_document(
         #     return {"answer": cached_answer}
         
         # 2. Initialize RAG Components
-        embeddings = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL_NAME)
+        # embeddings = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL_NAME)
         collection_name = f"doc_{document_id}"
         
         # Load the Vector Store (Retriever Source)
         vectorstore = Chroma(
             collection_name=collection_name, 
-            embedding_function=embeddings, 
+            embedding_function=global_embeddings, 
             persist_directory=f"{STORAGE_PATH}/chroma_db"
         )
         retriever = vectorstore.as_retriever(search_kwargs={"k": 4}) # Retrieve top 4 chunks
-        print("Step 2 complete")
+        # print("Step 2 complete")
         # 3. Define the LLM and Prompt
         llm = ChatOpenAI(model_name="gpt-5-nano", temperature=0) 
 
@@ -256,13 +286,13 @@ def chat_with_document(
         # --- 5. Main Retrieval Logic ---
         # Logic to decide which question to use for retrieval: 
         # If history exists, use the condensed query; otherwise, use the original question.
-        def get_retrieval_query(chain_input: dict):
+        async def get_retrieval_query(chain_input: dict):
             if not chain_input["chat_history"]:
                 # If no history, just use the original question (input)
                 return chain_input["question"]
             else:
                 # If history exists, run the condenser chain to get the standalone query
-                return condenser_chain.invoke(chain_input)
+                return await condenser_chain.ainvoke(chain_input)
                 
         # --- 6. Final RAG Chain Composition ---
         
@@ -297,20 +327,41 @@ def chat_with_document(
             # 4. Parsing
             | StrOutputParser()
         )
+
+        async def stream_response_generator():
+            full_response = ""
+            async for chunk in final_rag_chain.astream({"question": question, "chat_history": loaded_history}):
+                token = chunk
+                if token:
+                    full_response += token
+                    await asyncio.sleep(0.005) 
+                    yield token.encode("utf-8")
         
-        # 7. Run the Query
-        final_answer = final_rag_chain.invoke({"question": question, "chat_history": loaded_history})
+            message_history.add_user_message(question)
+            message_history.add_ai_message(full_response) 
         
-        # 8. Save the new messages (CRITICAL MEMORY STEP)
-        message_history.add_user_message(question)
-        message_history.add_ai_message(final_answer) 
-        
-        return {"answer": final_answer}
+        return StreamingResponse(
+            stream_response_generator(), 
+            media_type="text/plain"
+        )
         
     except Exception as e:
-        # Robust Error Handling (Employer skill)
         error_message = f"RAG Chat failed: {e}"
         if "API_KEY" in str(e) or "authentication" in str(e):
              error_message = "LLM API Key configuration error. Please check OPENAI_API_KEY."
         
         raise HTTPException(status_code=500, detail=error_message)
+    
+@app.get("/api/v1/documents", response_model=list[DocumentInfo])
+def list_documents(db: Session = Depends(get_db)):
+    """Retrieves metadata for all processed and indexed documents."""
+
+    documents = db.query(models.Document).filter(
+        models.Document.owner_id == MOCK_USER_ID,
+        models.Document.is_processed == True 
+    ).all()
+    # print(documents)
+    return [
+        DocumentInfo(id=d.id, filename=d.filename, is_processed=d.is_processed)
+        for d in documents
+    ]

@@ -9,7 +9,6 @@ class User(Base):
     __tablename__ = "users"
     id = Column(Integer, primary_key=True, index=True)
     username = Column(String, unique=True, index=True, nullable=False)
-    # Documents relationship defines how to get all documents uploaded by this user
     documents = relationship("Document", back_populates="owner")
 
 # --- 2. Document Model (Metadata) ---
@@ -17,8 +16,8 @@ class Document(Base):
     __tablename__ = "documents"
     id = Column(Integer, primary_key=True, index=True)
     filename = Column(String, index=True, nullable=False)
-    file_path = Column(String, nullable=False)  # Local path where the raw file is stored
-    summary = Column(Text, nullable=True)       # The LLM-generated summary
+    file_path = Column(String, nullable=False)  
+    summary = Column(Text, nullable=True)       
     upload_time = Column(DateTime(timezone=True), server_default=func.now())
     is_processed = Column(Boolean, default=False, nullable=False)
     
@@ -39,9 +38,9 @@ class CeleryJob(Base):
     document = relationship("Document", back_populates="job")
 
     # Status fields
-    celery_task_id = Column(String, unique=True, index=True, nullable=False) # The ID used by Celery/Redis
-    status = Column(String, default="PENDING", nullable=False)             # PENDING, STARTED, SUCCESS, FAILURE
-    result = Column(Text, nullable=True)                                    # Store error messages or completion details
+    celery_task_id = Column(String, unique=True, index=True, nullable=False) 
+    status = Column(String, default="PENDING", nullable=False)             
+    result = Column(Text, nullable=True)                                    
     start_time = Column(DateTime(timezone=True), server_default=func.now())
     end_time = Column(DateTime(timezone=True), nullable=True)
 
@@ -52,11 +51,10 @@ class MessageStore(Base):
     id = Column(Integer, primary_key=True)
     # Session ID links the conversation to the document and user
     session_id = Column(String, index=True, nullable=False) 
-    
-    # Store messages as JSONB (PostgreSQL's high-performance JSON type)
     message = Column(JSONB, nullable=False)
     
     # Optional: Indexing for fast retrieval by session
     __table_args__ = (
         Index("idx_message_store_session_id", "session_id"),
     )
+

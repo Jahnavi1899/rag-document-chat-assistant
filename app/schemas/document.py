@@ -3,7 +3,6 @@
 from pydantic import BaseModel, Field
 from datetime import datetime
 
-# Used to structure the data we send back about the created Celery job
 class CeleryJobStatus(BaseModel):
     job_id: str
     status: str
@@ -12,7 +11,6 @@ class CeleryJobStatus(BaseModel):
     class Config:
         from_attributes = True
 
-# Used to structure the data we send back after a document is uploaded
 class DocumentUploadResponse(BaseModel):
     document_id: int
     filename: str
@@ -23,5 +21,12 @@ class DocumentUploadResponse(BaseModel):
         from_attributes = True
 
 class ChatInput(BaseModel):
-    # This is a good way to structure text input for APIs
     question: str = Field(..., description="The user's question about the document.")
+
+class ChatPayload(BaseModel):
+    question: str
+
+class DocumentInfo(BaseModel):
+    id: int
+    filename: str
+    is_processed: bool
