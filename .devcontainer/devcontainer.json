@@ -1,0 +1,44 @@
+{
+  "name": "FastAPI RAG Backend Environment",
+  // Use a base image with Python, Node, and necessary tools
+  "image": "mcr.microsoft.com/devcontainers/python:3.11", 
+  "features": {
+    // Crucial for running docker-compose inside Codespaces
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {
+      "version": "latest",
+      "mobs_allow_non_root": "true",
+      "moby": false  
+    }
+  },
+  // Install required VS Code extensions on startup
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-python.black-formatter",
+        "formulahendry.auto-rename-tag"
+      ]
+    }
+  },
+  "forwardPorts": [8000, 5173, 5432, 6379],
+  "portsAttributes": {
+    "8000": {
+      "label": "FastAPI Backend",
+      "onAutoForward": "notify"
+    },
+    "5173": {
+      "label": "React Frontend",
+      "onAutoForward": "openBrowser"
+    },
+    "5432": {
+      "label": "PostgreSQL",
+      "onAutoForward": "silent"
+    },
+    "6379": {
+      "label": "Redis",
+      "onAutoForward": "silent"
+    }
+  },
+  // Automatically run your docker-compose file after the Codespace is ready
+  "postCreateCommand": "docker compose up -d" 
+}
