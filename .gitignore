@@ -2,6 +2,10 @@
 __pycache__/
 *.pyc
 
-storage/          # EXCLUDE: All documents, ChromaDB files, and logs
+storage/documents          # EXCLUDE: All documents, ChromaDB files, and logs
 /postgres_data/    # EXCLUDE: The persistent Postgres data volume
 /chroma_db/        # EXCLUDE: The vector store files (if stored outside /storage)
+.aws/
+
+terraform/terraform.tfvars
+terraform/*.tfvars
