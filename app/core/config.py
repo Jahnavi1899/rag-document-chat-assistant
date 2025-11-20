@@ -22,6 +22,11 @@ class Settings(BaseSettings):
     # LLM and RAG Settings
     OPENAI_API_KEY: str
 
+    # AWS Settings
+    S3_BUCKET: str
+    CHROMA_PATH: str = '/mnt/chromadb'
+    AWS_REGION: str = 'us-east-1'
+
     # Configuration for loading environment variables
     model_config = SettingsConfigDict(
         # Look for the .env file if running locally, though Docker Compose handles this

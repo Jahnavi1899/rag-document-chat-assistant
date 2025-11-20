@@ -22,3 +22,5 @@ chromadb
 # We will need these later
 langchain-openai
 tiktoken
+
+boto3==1.34.0

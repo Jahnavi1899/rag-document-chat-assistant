@@ -2,6 +2,7 @@
 import os
 from datetime import datetime, timezone
 import time
+import tempfile
 
 from sqlalchemy.orm import Session
 from app.core.celery_worker import celery_app
@@ -13,9 +14,16 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.embeddings import HuggingFaceEmbeddings # Open-source embeddings
 from langchain_community.vectorstores import Chroma # Simple Vector Store
 
+import boto3
+from botocore.exceptions import ClientError
+
 # Define the model to use for generating embeddings
-EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2" 
+EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
 STORAGE_PATH = "storage/documents" # Same path where FastAPI saved the file
+s3_client = boto3.client('s3')
+S3_BUCKET_NAME = os.getenv('S3_BUCKET')
+CHROMA_DB_PATH = os.getenv('CHROMA_PATH', '/mnt/chromadb')
+
 
 @celery_app.task(name="document.process_rag_ingestion")
 def process_rag_ingestion(document_id: int):
@@ -36,10 +44,16 @@ def process_rag_ingestion(document_id: int):
         db.commit()
 
         # 2. Document Loading and Splitting (The RAG Prep)
-        full_file_path = os.path.join(document.file_path)
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
+            s3_client.download_fileobj(
+                S3_BUCKET_NAME,
+                document.file_path,  # This is the S3 key
+                tmp_file
+            )
+        tmp_file_path = tmp_file.name
         
         # Instantiate Loader (assuming PDF; can be extended for .txt, .docx)
-        loader = PyPDFLoader(full_file_path)
+        loader = PyPDFLoader(tmp_file_path)
         
         # Load and split the document into chunks
         text_splitter = RecursiveCharacterTextSplitter(
@@ -65,7 +79,7 @@ def process_rag_ingestion(document_id: int):
             documents=chunks, 
             embedding=embeddings, 
             collection_name=collection_name,
-            persist_directory=f"{STORAGE_PATH}/chroma_db"
+            persist_directory=CHROMA_DB_PATH
         )
 
         # 4. Final Status Update
@@ -77,6 +91,7 @@ def process_rag_ingestion(document_id: int):
         job.result = f"Indexed {len(chunks)} chunks into collection {collection_name}."
         
         db.commit()
+        os.unlink(tmp_file_path)
         
         print(f"SUCCESS: Document ID {document_id} RAG ingestion complete.")
         return {"status": "SUCCESS", "document_id": document_id, "chunks_indexed": len(chunks)}

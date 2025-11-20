@@ -23,12 +23,18 @@ from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
 from langchain_community.chat_message_histories import PostgresChatMessageHistory
 
+import boto3
+from botocore.exceptions import ClientError
+
 global_embeddings = None
 
 # Configuration constants
 EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
 STORAGE_PATH = "storage/documents"
 MAX_HISTORY_MESSAGES = 10  # Limit chat history to last 10 messages
+s3_client = boto3.client('s3')
+S3_BUCKET_NAME = os.getenv('S3_BUCKET')
+CHROMA_DB_PATH = os.getenv('CHROMA_PATH', '/mnt/chromadb')
 
 
 def create_tables():
@@ -78,8 +84,9 @@ def startup_event():
         print("Embeddings model initialized successfully.")
 
         # Ensure storage directory exists
-        os.makedirs(STORAGE_PATH, exist_ok=True)
-        print(f"Storage directory verified: {STORAGE_PATH}")
+        # os.makedirs(STORAGE_PATH, exist_ok=True)
+        # print(f"Storage directory verified: {STORAGE_PATH}")
+        os.makedirs(CHROMA_DB_PATH, exist_ok=True)
 
     except Exception as e:
         print(f"FATAL RAG INITIALIZATION ERROR: {e}")
@@ -123,19 +130,29 @@ def upload_document(
 
     # Save the physical file locally (use a unique name)
     unique_filename = f"{uuid4()}_{file.filename}"
-    file_location = os.path.join(STORAGE_PATH, unique_filename)
+    s3_key = f"documents/{session_id}/{unique_filename}"
+
+    # file_location = os.path.join(STORAGE_PATH, unique_filename)
 
     try:
         # Ensure storage directory exists
-        os.makedirs(STORAGE_PATH, exist_ok=True)
+        # os.makedirs(STORAGE_PATH, exist_ok=True)
 
-        with open(file_location, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+        # with open(file_location, "wb") as buffer:
+        #     shutil.copyfileobj(file.file, buffer)
+        s3_client.upload_fileobj(
+            file.file,
+            S3_BUCKET_NAME,
+            s3_key,
+            ExtraArgs={'ServerSideEncryption':'AES256'}
+        )
+            
+        
 
         # Create Document metadata record in PostgreSQL
         document = models.Document(
             filename=file.filename,
-            file_path=file_location,
+            file_path=s3_key,
             session_id=session_id,
             is_processed=False
         )
@@ -169,9 +186,7 @@ def upload_document(
 
     except Exception as e:
         db.rollback()
-        # Clean up the file if database operation failed
-        if os.path.exists(file_location):
-            os.remove(file_location)
+        # Note: S3 cleanup could be added here if needed, but files are stored remotely
         raise HTTPException(status_code=500, detail=f"File processing failed: {str(e)}")
 
 @app.get("/api/v1/jobs/status/{task_id}", response_model=CeleryJobStatus)
@@ -238,7 +253,7 @@ async def chat_with_document(
         vectorstore = Chroma(
             collection_name=collection_name,
             embedding_function=global_embeddings,
-            persist_directory=f"{STORAGE_PATH}/chroma_db"
+            persist_directory=CHROMA_DB_PATH
         )
         retriever = vectorstore.as_retriever(search_kwargs={"k": 4})
 

@@ -9,3 +9,9 @@ storage/documents          # EXCLUDE: All documents, ChromaDB files, and logs
 
 terraform/terraform.tfvars
 terraform/*.tfvars
+terraform/.terraform
+terraform/learning/
+terraform/.terraform.lock.hcl
+terraform/terraform.tfstate
+terraform/terraform.tfstate.backup
+terraform/tfplan
