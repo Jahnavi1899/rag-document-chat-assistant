@@ -52,7 +52,7 @@ resource "aws_db_instance" "postgres" {
   engine                = "postgres"
   engine_version        = "16.3"
   instance_class        = var.db_instance_class
-  allocated_storage     = 10
+  allocated_storage     = 20
   max_allocated_storage = 50
   storage_type          = "gp3"
   storage_encrypted     = true
@@ -69,11 +69,11 @@ resource "aws_db_instance" "postgres" {
   publicly_accessible    = false
 
   # Backup configuration
-  backup_retention_period = 7
+  backup_retention_period = 1
   backup_window           = "03:00-04:00"
   maintenance_window      = "mon:04:00-mon:05:00"
 
-  # High availability (set to false for dev to save money)
+  # High availability
   multi_az = false
 
   # Deletion protection

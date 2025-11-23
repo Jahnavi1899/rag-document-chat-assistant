@@ -62,6 +62,12 @@ variable "db_password" {
   sensitive   = true
 }
 
+variable "openai_key_parameter_name" {
+  description = "Parameter Store name for OpenAI API key"
+  type        = string
+  default     = "/rag-chat/dev/openai-api-key"
+}
+
 # Redis connection info
 variable "redis_host" {
   description = "Redis host"

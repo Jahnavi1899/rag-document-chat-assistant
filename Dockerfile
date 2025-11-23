@@ -17,13 +17,11 @@ COPY requirements.txt .
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-RUN pip list | grep langchain
-RUN python -c "import langchain; print('langchain version:', langchain.__version__)"
-RUN python -c "import langchain_community; print('langchain_community installed')"
-RUN python -c "import sys; import langchain; print('langchain location:', langchain.__file__)"
-
 # Copy the rest of the application code
 COPY . .
 
+# Environment variables (will be overridden by ECS at runtime)
+ENV CHROMA_PATH=/mnt/chromadb
+ENV AWS_DEFAULT_REGION=us-east-1
 # Expose the port the FastAPI app will run on
 EXPOSE 8000

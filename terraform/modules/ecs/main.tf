@@ -50,6 +50,35 @@ resource "aws_iam_role_policy_attachment" "ecs_task_execution_role_policy" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
+# Policy for Task Execution Role to access Parameter Store
+resource "aws_iam_role_policy" "task_execution_parameter_store" {
+  name = "${var.app_name}-${var.environment}-execution-parameter-store"
+  role = aws_iam_role.ecs_task_execution_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "ssm:GetParameters",
+          "ssm:GetParameter"
+        ]
+        Resource = [
+          "arn:aws:ssm:${data.aws_region.current.name}:*:parameter/rag-chat/${var.environment}/*"
+        ]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "kms:Decrypt"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+}
+
 # ECS Task Role (used by your application code inside containers)
 resource "aws_iam_role" "ecs_task_role" {
   name = "${var.app_name}-${var.environment}-ecs-task-role"
@@ -90,6 +119,35 @@ resource "aws_iam_role_policy" "s3_access" {
           "arn:aws:s3:::${var.s3_bucket_name}",
           "arn:aws:s3:::${var.s3_bucket_name}/*"
         ]
+      }
+    ]
+  })
+}
+
+# Policy for Parameter Store access (for secrets)
+resource "aws_iam_role_policy" "parameter_store_access" {
+  name = "${var.app_name}-${var.environment}-parameter-store-access"
+  role = aws_iam_role.ecs_task_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "ssm:GetParameter",
+          "ssm:GetParameters"
+        ]
+        Resource = [
+          "arn:aws:ssm:${data.aws_region.current.name}:*:parameter/rag-chat/${var.environment}/*"
+        ]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "kms:Decrypt"
+        ]
+        Resource = "*"
       }
     ]
   })
@@ -304,6 +362,13 @@ resource "aws_ecs_task_definition" "backend" {
         }
       ]
 
+      secrets = [
+        {
+          name      = "OPENAI_API_KEY"
+          valueFrom = "arn:aws:ssm:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:parameter/rag-chat/${var.environment}/openai-api-key"
+        }
+      ]
+
       mountPoints = [
         {
           sourceVolume  = "chromadb"
@@ -375,6 +440,13 @@ resource "aws_ecs_task_definition" "worker" {
         {
           name  = "CHROMA_PATH"
           value = "/mnt/chromadb"
+        }
+      ]
+
+      secrets = [
+        {
+          name      = "OPENAI_API_KEY"
+          valueFrom = "arn:aws:ssm:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:parameter/rag-chat/${var.environment}/openai-api-key"
         }
       ]
 
@@ -520,3 +592,4 @@ resource "aws_ecs_service" "worker" {
 # ============================================
 
 data "aws_region" "current" {}
+data "aws_caller_identity" "current" {}

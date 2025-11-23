@@ -126,6 +126,7 @@ module "ecs" {
   db_name     = module.database.db_name
   db_username = var.db_username
   db_password = var.db_password
+  openai_key_parameter_name  = "/rag-chat/dev/openai-api-key"
 
   # Redis connections
   redis_host = module.cache.redis_endpoint
@@ -138,10 +139,10 @@ module "ecs" {
   efs_file_system_id    = module.storage.efs_file_system_id
   efs_security_group_id = module.storage.efs_security_group_id
 
-  # Docker images (placeholders for now)
-  frontend_image = "nginx:latest"
-  backend_image  = "nginx:latest"
-  worker_image   = "nginx:latest"
+  # Docker images
+  frontend_image = "671002574880.dkr.ecr.us-east-1.amazonaws.com/rag-chat/frontend:latest"
+  backend_image  = "671002574880.dkr.ecr.us-east-1.amazonaws.com/rag-chat/backend:latest"
+  worker_image   = "671002574880.dkr.ecr.us-east-1.amazonaws.com/rag-chat/backend:latest"
 
   tags = local.common_tags
 }
