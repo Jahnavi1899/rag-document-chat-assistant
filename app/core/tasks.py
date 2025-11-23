@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.core.celery_worker import celery_app
 from app.core.database import SessionLocal  # We need SessionLocal to talk to the DB from the worker
 from app.core import models 
+from app.core.config import settings
 
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -21,8 +22,8 @@ from botocore.exceptions import ClientError
 EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
 STORAGE_PATH = "storage/documents" # Same path where FastAPI saved the file
 s3_client = boto3.client('s3')
-S3_BUCKET_NAME = os.getenv('S3_BUCKET')
-CHROMA_DB_PATH = os.getenv('CHROMA_PATH', '/mnt/chromadb')
+S3_BUCKET_NAME = settings.S3_BUCKET
+CHROMA_DB_PATH = settings.CHROMA_PATH
 
 
 @celery_app.task(name="document.process_rag_ingestion")

@@ -33,8 +33,8 @@ EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
 STORAGE_PATH = "storage/documents"
 MAX_HISTORY_MESSAGES = 10  # Limit chat history to last 10 messages
 s3_client = boto3.client('s3')
-S3_BUCKET_NAME = os.getenv('S3_BUCKET')
-CHROMA_DB_PATH = os.getenv('CHROMA_PATH', '/mnt/chromadb')
+S3_BUCKET_NAME = settings.S3_BUCKET
+CHROMA_DB_PATH = settings.CHROMA_PATH
 
 
 def create_tables():

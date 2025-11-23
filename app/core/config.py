@@ -24,19 +24,30 @@ class Settings(BaseSettings):
 
     # AWS Settings
     S3_BUCKET: str
-    CHROMA_PATH: str = '/mnt/chromadb'
-    AWS_REGION: str = 'us-east-1'
+    CHROMA_PATH: str
+    AWS_REGION: str 
 
     # Configuration for loading environment variables
     model_config = SettingsConfigDict(
         # Look for the .env file if running locally, though Docker Compose handles this
         env_file='.env',
-        # Case insensitive matching (e.g., 'database_url' matches 'DATABASE_URL')
         case_sensitive=True
     )
 
+    def validate_settings(self):
+        """Validate critical settings are present"""
+        if not self.OPENAI_API_KEY.startswith('sk-'):
+            raise ValueError("Invalid OPENAI_API_KEY format")
+        return True
+
 settings = Settings()
 
-# Check: Print a piece of config to ensure it loaded correctly
-print(f"DB User: {settings.DB_USER}") 
-# You can run this file directly in the Codespace terminal to test the loading.
+try:
+    settings.validate_settings()
+    print(f"✓ Configuration loaded successfully")
+    print(f"  - Database: {settings.DB_NAME}")
+    print(f"  - Redis: {settings.REDIS_HOST}:{settings.REDIS_PORT}")
+    print(f"  - S3 Bucket: {settings.S3_BUCKET}")
+except Exception as e:
+    print(f"✗ Configuration error: {e}")
+    raise
