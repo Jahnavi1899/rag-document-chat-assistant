@@ -332,6 +332,8 @@ resource "aws_ecs_task_definition" "backend" {
       image     = var.backend_image
       essential = true
 
+      command = ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
       portMappings = [
         {
           containerPort = 8000
@@ -345,8 +347,32 @@ resource "aws_ecs_task_definition" "backend" {
           value = "postgresql://${var.db_username}:${var.db_password}@${var.db_host}:${var.db_port}/${var.db_name}"
         },
         {
-          name  = "REDIS_URL"
-          value = "redis://${var.redis_host}:${var.redis_port}"
+          name  = "DB_USER"
+          value = var.db_username
+        },
+        {
+          name  = "DB_PASSWORD"
+          value = var.db_password
+        },
+        {
+          name  = "DB_NAME"
+          value = var.db_name
+        },
+        {
+          name  = "REDIS_HOST"
+          value = var.redis_host
+        },
+        {
+          name  = "REDIS_PORT"
+          value = var.redis_port
+        },
+        {
+          name  = "CELERY_BROKER_URL"
+          value = "redis://${var.redis_host}:${var.redis_port}/0"
+        },
+        {
+          name  = "CELERY_RESULT_BACKEND"
+          value = "redis://${var.redis_host}:${var.redis_port}/1"
         },
         {
           name  = "S3_BUCKET"
@@ -361,6 +387,7 @@ resource "aws_ecs_task_definition" "backend" {
           value = "/mnt/chromadb"
         }
       ]
+
 
       secrets = [
         {
@@ -420,14 +447,40 @@ resource "aws_ecs_task_definition" "worker" {
       image     = var.worker_image
       essential = true
 
+      command = ["celery", "-A", "app.core.celery_worker:celery_app", "worker", "-l", "info"]
+
       environment = [
         {
           name  = "DATABASE_URL"
           value = "postgresql://${var.db_username}:${var.db_password}@${var.db_host}:${var.db_port}/${var.db_name}"
         },
         {
-          name  = "REDIS_URL"
-          value = "redis://${var.redis_host}:${var.redis_port}"
+          name  = "DB_USER"
+          value = var.db_username
+        },
+        {
+          name  = "DB_PASSWORD"
+          value = var.db_password
+        },
+        {
+          name  = "DB_NAME"
+          value = var.db_name
+        },
+        {
+          name  = "REDIS_HOST"
+          value = var.redis_host
+        },
+        {
+          name  = "REDIS_PORT"
+          value = var.redis_port
+        },
+        {
+          name  = "CELERY_BROKER_URL"
+          value = "redis://${var.redis_host}:${var.redis_port}/0"
+        },
+        {
+          name  = "CELERY_RESULT_BACKEND"
+          value = "redis://${var.redis_host}:${var.redis_port}/1"
         },
         {
           name  = "S3_BUCKET"

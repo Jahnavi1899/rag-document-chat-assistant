@@ -52,7 +52,7 @@ function App() {
         fetchDocuments();
     }, []);
 
-    const currentChatId = selectedDocumentId || processedDocumentId;
+    const currentChatId = processedDocumentId || selectedDocumentId;
     const currentChatName = availableDocuments.find(doc => doc.id === currentChatId)?.filename || 
     (currentChatId === processedDocumentId ? processedDocumentName : '');
 
@@ -68,6 +68,7 @@ function App() {
                     setProcessedDocumentId(docId);
                     setProcessedDocumentName(fileName);
                     setProcessingStatus('SUCCESS');
+                    setSelectedDocumentId(docId);
                     // Refresh document list after successful upload
                     fetchDocuments();
                 }}
